@@ -1,0 +1,93 @@
+version: 2
+
+
+# dbt run --models staging
+# https://docs.getdbt.com/reference/resource-configs/schema
+models:
+  - name: stg_account_info
+    catalog: hive
+    schema: stg
+    columns:
+      - name: account_number
+        tests:
+          - unique
+          - not_null
+      - name: account_status_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["00", "01", "02"]
+              quote: true
+
+  - name: stg_customer_info
+    catalog: hive
+    schema: stg
+    columns:
+      - name: customer_number
+        tests:
+          - unique
+          - not_null
+      - name: customer_status_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["00", "23"]
+              quote: true
+      - name: gender_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["F", "M"]
+              quote: true       
+
+  - name: stg_stock_info
+    catalog: hive
+    schema: stg
+    columns:
+      - name: stock_code
+        tests:
+          - unique
+          - not_null
+      - name: stock_status_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["P", "N", "D"]
+              quote: true            
+      - name: market_classification_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["KSP", "KSQ"]
+              quote: true
+
+  - name: stg_execution_hist
+    catalog: hive
+    schema: stg
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - order_date
+            - order_sequence_number
+            - execution_sequence_number
+
+  - name: stg_order_hist
+    catalog: hive
+    schema: stg
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns:
+            - ORDER_DATE
+            - ORDER_SEQUENCE_NUMBER
+    columns:
+      - name: order_processing_status_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["1", "2", "3", "4"]
+              quote: true
+      - name: buy_sell_classification_code
+        tests:
+          - not_null
+          - accepted_values:
+              values: ["01", "02"]            

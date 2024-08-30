@@ -1,0 +1,483 @@
+version: "3.9"
+
+# Configure modules
+x-airflow-common:
+  &airflow-common
+  image: apache/airflow:2.7.0-python3.10
+  environment:
+    &airflow-common-env
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: mysql://airflow:airflow@mysql/airflow_db
+    AIRFLOW__CORE__SQL_ALCHEMY_CONN: mysql://airflow:airflow@mysql/airflow_db
+    AIRFLOW__CELERY__RESULT_BACKEND: db+mysql://airflow:airflow@mysql/airflow_db
+    AIRFLOW__CELERY__BROKER_URL: redis://:@redis:6379/0
+    AIRFLOW__CORE__FERNET_KEY: ''
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    AIRFLOW__WEBSERVER__DEFAULT_UI_TIMEZONE: Asia/Seoul
+    AIRFLOW__CORE__DEFAULT_TIMEZONE: Asia/Seoul
+    AIRFLOW_UID: '50000'
+    _AIRFLOW_WWW_USER_USERNAME: airflow
+    _AIRFLOW_WWW_USER_PASSWORD: airflow
+    _PIP_ADDITIONAL_REQUIREMENTS: apache-airflow==2.7.0 dbt-core dbt-trino trino airflow-dbt
+  volumes:
+    - ./dags:/opt/airflow/dags
+    - ./dbt-trino:/opt/airflow/dbts
+    - ./docker/airflow/config:/opt/airflow/config
+    - ./docker/airflow/plugins:/opt/airflow/plugins
+    - ./mnt/airflow/logs:/opt/airflow/logs
+  user: "50000"
+  depends_on:
+    &airflow-common-depends-on
+    redis:
+      condition: service_healthy
+    mysql:
+      condition: service_healthy
+
+services:
+  #####################################################
+  # CAdvisor
+  #####################################################
+  cadvisor:
+    profiles: ["cadvisor"]
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+    - 18080:18080
+    volumes:
+    - /:/rootfs:ro
+    - /var/run:/var/run:rw
+    - /sys:/sys:ro
+    - /var/lib/docker/:/var/lib/docker:ro
+    depends_on:
+    - redis
+
+  #####################################################
+  # Apache Hadoop
+  #####################################################
+  custom-base-hadoop:
+    profiles: [ "hive" ]
+    build:
+      context: .
+      dockerfile: ./base-images/hadoop/Dockerfile
+    image: keyhong/custom-base-hadoop:v1.0.0
+    container_name: hadoop-image-build
+    entrypoint: /bin/bash
+    command: ["-c", "exec", "/entrypoint", "hadoop", "version"]
+
+  namenode:
+    profiles: [ "hive" ]
+    depends_on:
+      custom-base-hadoop:
+        condition: service_completed_successfully
+    build:
+      context: .
+      dockerfile: ./docker/hadoop/namenode/Dockerfile
+    image: keyhong/namenode:v1.0.0
+    container_name: namenode
+    expose:
+      - "9864" # HDFS Namenode default PRC
+    ports:
+      - "9870:9870" # HDFS Namenode Web Http
+    volumes:
+      - ./mnt/hadoop/namenode:/data/hadoop/dfs/name
+    environment:
+      CLUSTER_NAME: hadoop_cluster
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "namenode", "9870" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  datanode:
+    profiles: [ "hive" ]
+    depends_on:
+      namenode:
+        condition: service_healthy
+    build:
+      context: .
+      dockerfile: ./docker/hadoop/datanode/Dockerfile
+    image: keyhong/datanode:v1.0.0
+    container_name: datanode
+    expose:
+      - "9867" # HDFS Datanode IPC
+    ports:
+      - "9864:9864" # HDFS Datanode Web Http
+    volumes:
+      - ./mnt/hadoop/datanode:/data/hadoop/dfs/data
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "datanode", "9864" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  #####################################################
+  # MySQL
+  #####################################################
+  mysql:
+    image: mysql:8.0.36-bullseye
+    platform: linux/amd64
+    container_name: mysql
+    env_file:
+      - ./.envs/.local/.mysql
+    environment:
+      TZ: Asia/Seoul
+    ports:
+      - 3306:3306
+    volumes:
+      - ./mnt/mysql:/var/lib/mysql
+      - ./init-sql/mysql:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD", "mysqladmin", "ping", "-h", "localhost", "-proot" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    command:
+      - --character-set-server=utf8
+      - --collation-server=utf8_unicode_ci
+    restart: unless-stopped
+
+  #####################################################
+  # Apache Hive
+  #####################################################
+  custom-base-hive:
+    profiles: [ "hive" ]
+    build:
+      context: .
+      dockerfile: ./base-images/hive/Dockerfile
+    image: keyhong/custom-base-hive:v1.0.0
+    container_name: hive-image-build
+    depends_on:
+      custom-base-hadoop:
+        condition: service_completed_successfully
+    entrypoint: /bin/bash
+    command: ["-c", "exec", "/entrypoint", "hive", "version"]
+
+  hive-metastore:
+    profiles: [ "hive" ]
+    build:
+      context: .
+      dockerfile: ./docker/hive/metastore/Dockerfile
+    image: keyhong/hive-metastore:v1.0.0
+    container_name: hive-metastore
+    depends_on:
+      &hive-common-depends-on
+      custom-base-hive:
+        condition: service_completed_successfully
+      namenode:
+        condition: service_healthy
+      datanode:
+        condition: service_healthy
+      mysql:
+        condition: service_healthy
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870 datanode:9864 mysql:3306"
+    volumes:
+      - ./mnt/schematool-check:/schematool-check
+    ports:
+      - "9083:9083" # Hive Metastore Server
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "hive-metastore", "9083" ]
+      timeout: 45s
+      interval: 10s
+    restart: unless-stopped
+
+  hiveserver2:
+    profiles: [ "hive" ]
+    build:
+      context: .
+      dockerfile: ./docker/hive/hiveserver2/Dockerfile
+    image: keyhong/hiveserver2:v1.0.0
+    container_name: hiveserver2
+    depends_on:
+      <<: *hive-common-depends-on
+      hive-metastore:
+        condition: service_healthy
+    environment:
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+    ports:
+      - "10000:10000" # HiveServer2 Client
+      - "10002:10002" # HiveServer2 Web UI
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "hiveserver2", "10002" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  hive-webhcat:
+    profiles: [ "hive-webhcat" ]
+    build:
+      context: .
+      dockerfile: ./docker/hive/webhcat/Dockerfile
+    image: keyhong/hive-webhcat:v1.0.0
+    container_name: hive-webhcat
+    expose:
+      - "50111"
+    depends_on:
+      <<: *hive-common-depends-on
+      hiveserver2:
+        condition: service_healthy
+    environment:
+      - SERVICE_PRECONDITION=hiveserver2:10000
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "hive-webhcat", "50111" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  #####################################################
+  # Hue
+  #####################################################
+  hue:
+    profiles: [ "hue" ]
+    build: ./docker/hue
+    container_name: hue
+    depends_on:
+      - hiveserver2
+      - mysql
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./mnt/hue/hue.ini:/usr/share/hue/desktop/conf/z-hue.ini
+    environment:
+      - SERVICE_PRECONDITION=hiveserver2:10000 mysql:3306
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "hue", "8888" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  #####################################################
+  # Apache Kudu
+  #####################################################
+  kudu-master:
+    profiles: ["kudu"]
+    image: apache/kudu:${KUDU_QUICKSTART_VERSION:-latest}
+    container_name: kudu-master
+    ports:
+      - "7051:7051"
+      - "8051:8051"
+    command: [ "master" ]
+    volumes:
+      - kudu-master-v:/var/lib/kudu
+    environment:
+      - KUDU_MASTERS=kudu-master:7051
+      - >
+        MASTER_ARGS=--fs_wal_dir=/var/lib/kudu/master
+        --rpc_bind_addresses=0.0.0.0:7051
+        --rpc_advertised_addresses=host.docker.internal:7051
+        --webserver_advertised_addresses=host.docker.internal:8051
+        --webserver_doc_root=/opt/kudu/www
+        --stderrthreshold=0
+        --use_hybrid_clock=false
+        --unlock_unsafe_flags=true
+        --default_num_replicas=1
+
+  kudu-tserver:
+    profiles: [ "kudu" ]
+    image: apache/kudu:${KUDU_QUICKSTART_VERSION:-latest}
+    container_name: kudu-tserver
+    depends_on:
+      - kudu-master
+    ports:
+      - "7050:7050"
+      - "8050:8050"
+    command: [ "tserver" ]
+    volumes:
+      - kudu-tserver-v:/var/lib/kudu
+    environment:
+      - KUDU_MASTERS=kudu-master:7051
+      - >
+        TSERVER_ARGS=--fs_wal_dir=/var/lib/kudu/tserver
+        --rpc_bind_addresses=0.0.0.0:7050
+        --rpc_advertised_addresses=host.docker.internal:7050
+        --webserver_advertised_addresses=localhost:8050
+        --webserver_doc_root=/opt/kudu/www
+        --stderrthreshold=0
+        --use_hybrid_clock=false
+        --unlock_unsafe_flags=true
+        --default_num_replicas=1
+
+  #####################################################
+  # Trino
+  #####################################################
+  trino:
+    profiles: ["trino"]
+    build:
+      context: .
+      dockerfile: ./docker/trino/Dockerfile
+    image: keyhong/trino:v1.0.0
+    container_name: trino
+    depends_on:
+      - hive-metastore
+      - kudu-tserver
+    environment:
+      SERVICE_PRECONDITION: "hive-metastore:9083 kudu-tserver:8050"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: [ "CMD", "nc", "-z", "trino", "8080" ]
+      timeout: 45s
+      interval: 10s
+      retries: 10
+    restart: unless-stopped
+
+  #####################################################
+  # DBT
+  #####################################################
+  dbt-workspace:
+    profiles: ["dbt"]
+    image: python:3.10.13-slim-bullseye
+    container_name: dbt
+    command: [ "sleep", "6000000" ]
+    volumes:
+      - ./dbt-trino:/dbt
+
+
+  #####################################################
+  # Airflow
+  #####################################################
+  airflow-webserver:
+    <<: *airflow-common
+    profiles: [ "airflow" ]
+    container_name: airflow-webserver
+    command: webserver
+    ports:
+      - "8888:8080"
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    profiles: [ "airflow" ]
+    container_name: airflow-scheduler
+    command: scheduler
+    healthcheck:
+      test: [ "CMD", "curl", "--fail", "http://localhost:8974/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-worker:
+    <<: *airflow-common
+    profiles: [ "airflow" ]
+    container_name: airflow-worker
+    command: celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.providers.celery.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}" || celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # airflow-triggerer:
+  #   <<: *airflow-common
+  #   profiles: [ "airflow" ]
+  #   container_name: airflow-triggerer
+  #   command: triggerer
+  #   healthcheck:
+  #     test: [ "CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"' ]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 5
+  #     start_period: 30s
+  #   restart: always
+  #   depends_on:
+  #     <<: *airflow-common-depends-on
+  #     airflow-init:
+  #       condition: service_completed_successfully
+
+  airflow-cli:
+    <<: *airflow-common
+    container_name: airflow-cli
+    profiles: [ "airflow-debug" ]
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"
+    # Workaround for entrypoint issue. See: https://github.com/apache/airflow/issues/16252
+    command:
+      - bash
+      - -c
+      - airflow
+
+  airflow-init:
+    <<: *airflow-common
+    profiles: [ "airflow" ]
+    container_name: airflow-init
+    entrypoint: /bin/bash
+    # yamllint disable rule:line-length
+    command:
+      - -c
+      - |
+        mkdir -p /sources/{logs,dags,plugins}
+        chown -R "50000:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    # yamllint enable rule:line-lengthㅡ
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _PIP_ADDITIONAL_REQUIREMENTS: ''
+    user: "0:0"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources/dags
+
+  redis:
+    profiles: [ "airflow" ]
+    container_name: redis
+    hostname: redis
+    image: redis:latest
+    expose:
+      - 6379
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
+
+######################################################
+# NETWORK
+######################################################
+networks:
+  default:
+    name: hadoop-cluster
+
+volumes:
+  kudu-master-v:
+  kudu-tserver-v:

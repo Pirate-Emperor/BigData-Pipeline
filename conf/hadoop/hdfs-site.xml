@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<?xml-stylesheet type="text/xsl" href="configuration.xsl"?>
+<!--
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License. See accompanying LICENSE file.
+-->
+
+
+
+<configuration>
+    <property>
+        <name>dfs.webhdfs.enabled</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>dfs.permissions.enabled</name>
+        <value>false</value>
+    </property>
+    
+    
+    <property>
+        <name>dfs.namenode.http-address</name>
+        <value>0.0.0.0:9870</value> 
+    </property>
+    <property>
+        <name>dfs.datanode.http.address</name>
+        <value>0.0.0.0:9864</value>
+    </property>    
+
+    
+    <property>
+        <name>dfs.namenode.name.dir</name>
+        <value>/data/hadoop/dfs/name</value>
+        <description>
+            Determines where on the local filesystem the DFS name node should store the name table(fsimage).
+            If this is a comma-delimited list of directories then the name table is replicated in all of the directories, for redundancy.
+        </description>
+    </property>
+    <property>
+        <name>dfs.datanode.data.dir</name>
+        <value>/data/hadoop/dfs/data</value>
+        <description>
+            Determines where on the local filesystem an DFS data node should store its blocks.
+            If this is a comma-delimited list of directories, then data will be stored in all named directories, typically on different devices.
+            The directories should be tagged with corresponding storage types ([SSD]/[DISK]/[ARCHIVE]/[RAM_DISK]) for HDFS storage policies.
+            The default storage type will be DISK if the directory does not have a storage type tagged explicitly.
+            Directories that do not exist will be created if local filesystem permission allows.
+        </description>
+    </property>
+
+    <property>
+        <name>dfs.namenode.datanode.registration.ip-hostname-check</name>
+        <value>false</value>
+    </property>
+    <property>
+        <name>dfs.namenode.rpc-bind-host</name>
+        <value>0.0.0.0</value>
+    </property>
+    <property>
+        <name>dfs.namenode.servicerpc-bind-host</name>
+        <value>0.0.0.0</value>
+    </property>
+    <property>
+        <name>dfs.namenode.http-bind-host</name>
+        <value>0.0.0.0</value>
+    </property>
+    <property>
+        <name>dfs.namenode.https-bind-host</name>
+        <value>0.0.0.0</value>
+    </property>
+    <property>
+        <name>dfs.client.use.datanode.hostname</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>dfs.datanode.use.datanode.hostname</name>
+        <value>true</value>
+    </property>
+    <property>
+        <name>dfs.replication</name>
+        <value>1</value>
+        <description>
+            Default block replication. The actual number of replications can be specified when the file is created.
+            The default is used if replication is not specified in create time.
+        </description>
+    </property>
+</configuration>

@@ -1,0 +1,17 @@
+version: 2
+
+sources:
+  - name: hdfs_source
+    catalog: hive
+    schema: src
+    tables:
+      - name: account_info
+
+      - name: customer_info
+
+      - name: stock_info
+
+      - name: execution_hist
+
+      - name: order_hist
+

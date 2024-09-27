@@ -1,0 +1,7 @@
+DROP DATABASE IF EXISTS metastore;
+DROP ROLE IF EXISTS hive;
+CREATE USER 'hive'@'%' IDENTIFIED BY 'hive';
+CREATE DATABASE metastore;
+GRANT ALL PRIVILEGES ON metastore.* TO 'hive'@'%';
+
+FLUSH PRIVILEGES;

@@ -1,0 +1,16 @@
+### dbt ###
+target/
+dbt_modules/
+dbt_packages/
+logs/
+
+# Python
+__pycache__/
+.ipynb_checkpoints/
+
+# Mac
+.DS_Store
+
+# VS Code
+.vscode/
+.envs/
